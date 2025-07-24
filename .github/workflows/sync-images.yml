@@ -65,7 +65,7 @@ jobs:
             full_path=$(jq -r --arg fname "$filename" '
               .tree[]
               | select(.type == "blob")
-              | select(.path | startwith("${{ env.UPSTREAM_PATH }}/"))
+              | select(.path | startswith("${{ env.UPSTREAM_PATH }}/"))
               | select(.path | split("/")[-1] == $fname)
               | .path
             ' tree.json | head -n 1)
