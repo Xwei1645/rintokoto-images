@@ -53,25 +53,34 @@ jobs:
           echo "Files to download: $(wc -l < download.list)"
           echo "files_to_download=$(jq -Rsc 'split("\n") | .[:-1]' download.list)" >> $GITHUB_OUTPUT
 
-      - name: Download new images
+      - name: Download missing images
         if: steps.diff.outputs.files_to_download != '[]'
         shell: bash
         run: |
-          echo '${{ steps.diff.outputs.files_to_download }}' | jq -r '.[]' | while IFS= read -r rel_path; do
-            local_rel_path="${rel_path#${{ env.UPSTREAM_PATH }}/}"
-            local_path="${{ env.LOCAL_DIR }}/${local_rel_path}"
-            mkdir -p "$(dirname "$local_path")"
+          jq -r '.[]' <<< '${{ steps.diff.outputs.files_to_download }}' | while IFS= read -r filename; do
+            # 根据文件名反查出所有匹配的完整路径（可能多条）
+            jq -r --arg fname "$filename" '
+              .tree[]
+              | select(.type == "blob")
+              | select(.path | startswith("${{ env.UPSTREAM_PATH }}/"))
+              | select(.path | split("/")[-1] == $fname)
+              | .path
+            ' tree.json | while IFS= read -r full_path; do
+              encoded_path=$(printf '%s' "$full_path" | jq -sRr @uri)
 
-            # URL-encode 路径
-            encoded_path=$(printf '%s' "$rel_path" | jq -sRr @uri)
+              # 拆出子目录名
+              dir_name=$(basename "$(dirname "$full_path")")
+              # 拼出新文件名：原名_目录名.扩展名
+              new_name="${filename%.*}_${dir_name}.${filename##*.}"
 
-            echo "Downloading $rel_path -> $local_path"
-            if curl --fail -sL -o "$local_path" \
-               "https://raw.githubusercontent.com/${{ env.UPSTREAM_OWNER }}/${{ env.UPSTREAM_REPO }}/main/${encoded_path}"; then
-              echo "✅ OK"
-            else
-              echo "⚠️  Failed / not found, skipped: $rel_path"
-            fi
+              local_file="${{ env.LOCAL_DIR }}/${new_name}"
+
+              echo "Downloading $full_path -> $new_name"
+              curl --fail -sL -o "$local_file" \
+                "https://raw.githubusercontent.com/${{ env.UPSTREAM_OWNER }}/${{ env.UPSTREAM_REPO }}/main/${encoded_path}" \
+                && echo "✅ OK" \
+                || echo "⚠️  Failed, skipped: $new_name"
+            done
           done
 
       - name: Commit & push changes
