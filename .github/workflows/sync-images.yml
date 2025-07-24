@@ -19,37 +19,28 @@ jobs:
       - name: Fetch upstream file list
         id: fetch-upstream
         run: |
-          # 使用 GitHub API 获取上游仓库指定目录的树对象信息 (recursive=1 会包含所有子目录)
           curl -sL \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${{ env.UPSTREAM_OWNER }}/${{ env.UPSTREAM_REPO }}/git/trees/main?recursive=1" \
             > tree.json
 
-          # 使用 jq 解析 JSON，过滤出指定目录及其子目录下的图片文件
-          # 并格式化为 "sha path"，然后排序
           jq -r '
             .tree[] |
             select(.type == "blob") |
             select(.path | startswith("${{ env.UPSTREAM_PATH }}/")) |
             select(.path | test("\\.(png|jpe?g|gif|svg|webp|bmp|ico)$"; "i")) |
-            "\(.sha) \(.path)"
+            .path
           ' tree.json | sort > upstream.list
 
           echo "Upstream image count: $(wc -l < upstream.list)"
 
-      - name: Build local file list (recursively)
+      - name: Build local file list
         run: |
           mkdir -p "${{ env.LOCAL_DIR }}"
           cd "${{ env.LOCAL_DIR }}"
 
-          # 使用 find 命令递归查找所有文件
-          # 对于找到的每个文件，计算其 git sha1 哈希，并构建其在上游仓库中的对应路径
           find . -type f | sed 's|^\./||' | while read -r file; do
-            # 计算本地文件的 git sha1 哈希
-            local_sha=$(git hash-object "$file")
-            # 构建文件在上游仓库中的完整路径
-            upstream_full_path="${{ env.UPSTREAM_PATH }}/$file"
-            echo "$local_sha $upstream_full_path"
+            echo "${{ env.UPSTREAM_PATH }}/$file"
           done | sort > ../local.list
 
           cd ..
@@ -58,32 +49,18 @@ jobs:
       - name: Find images to download
         id: diff
         run: |
-          # 使用 comm 命令找出仅存在于 upstream.list 中的行（即需要下载的新文件或更新文件）
           comm -23 upstream.list local.list > download.list
           echo "Files to download: $(wc -l < download.list)"
-          # 将需要下载的文件路径设置为输出变量，以便下一步使用
-          # 输出格式为 JSON 数组
-          echo "files_to_download=$(jq -Rsc 'split("\n") | .[:-1] | map(split(" ")[1])' download.list)" >> $GITHUB_OUTPUT
+          echo "files_to_download=$(jq -Rsc 'split("\n") | .[:-1]' download.list)" >> $GITHUB_OUTPUT
 
-      - name: Download new/changed images
+      - name: Download new images
         if: steps.diff.outputs.files_to_download != '[]'
         run: |
-          # 从上一步的输出中读取需要下载的文件列表
           echo '${{ steps.diff.outputs.files_to_download }}' | jq -r '.[]' | while read -r rel_path; do
-            # 从上游完整路径中，推导出在本地 LOCAL_DIR 下的相对路径
-            # 例如，从 "updates/images/subdir/icon.png" 得到 "subdir/icon.png"
             local_rel_path="${rel_path#${{ env.UPSTREAM_PATH }}/}"
-            
-            # 构建文件的完整本地存储路径
             local_path="${{ env.LOCAL_DIR }}/${local_rel_path}"
-
-            echo "Downloading $rel_path to $local_path"
-
-            # 在下载文件之前，确保其所在的目录存在
-            # dirname 会获取文件的目录部分，mkdir -p 会创建所有必需的父目录
             mkdir -p "$(dirname "$local_path")"
-            
-            # 使用 curl 下载文件
+            echo "Downloading $rel_path to $local_path"
             curl -sL -o "$local_path" \
               "https://raw.githubusercontent.com/${{ env.UPSTREAM_OWNER }}/${{ env.UPSTREAM_REPO }}/main/${rel_path}"
           done
@@ -92,15 +69,10 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          
-          # 将新下载的图片添加到暂存区
           git add "${{ env.LOCAL_DIR }}"
-          
-          # 检查是否有变更
           if ! git diff --cached --quiet; then
-            echo "Committing and pushing changes..."
             git commit -m "Incremental sync: Sync images at $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
             git push
           else
-            echo "No new images to commit. Everything is up-to-date."
+            echo "No new images to commit."
           fi
