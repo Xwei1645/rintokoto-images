@@ -55,14 +55,23 @@ jobs:
 
       - name: Download new images
         if: steps.diff.outputs.files_to_download != '[]'
+        shell: bash
         run: |
-          echo '${{ steps.diff.outputs.files_to_download }}' | jq -r '.[]' | while read -r rel_path; do
+          echo '${{ steps.diff.outputs.files_to_download }}' | jq -r '.[]' | while IFS= read -r rel_path; do
             local_rel_path="${rel_path#${{ env.UPSTREAM_PATH }}/}"
             local_path="${{ env.LOCAL_DIR }}/${local_rel_path}"
             mkdir -p "$(dirname "$local_path")"
-            echo "Downloading $rel_path to $local_path"
-            curl -sL -o "$local_path" \
-              "https://raw.githubusercontent.com/${{ env.UPSTREAM_OWNER }}/${{ env.UPSTREAM_REPO }}/main/${rel_path}"
+
+            # URL-encode 路径
+            encoded_path=$(printf '%s' "$rel_path" | jq -sRr @uri)
+
+            echo "Downloading $rel_path -> $local_path"
+            if curl --fail -sL -o "$local_path" \
+               "https://raw.githubusercontent.com/${{ env.UPSTREAM_OWNER }}/${{ env.UPSTREAM_REPO }}/main/${encoded_path}"; then
+              echo "✅ OK"
+            else
+              echo "⚠️  Failed / not found, skipped: $rel_path"
+            fi
           done
 
       - name: Commit & push changes
